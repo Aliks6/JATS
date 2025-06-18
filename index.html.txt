@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CleanQuest - Real Trash Cleanup Game</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#4CAF50" />
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 0; }
+    #map { height: 60vh; width: 100%; }
+    #controls { padding: 1em; }
+    img { max-width: 100%; }
+    .hidden { display: none; }
+    #trashInfo, #questProgress, #score { font-weight: bold; margin-top: 1em; }
+  </style>
+</head>
+<body>
+  <h2 style="text-align:center">CleanQuest: Catch Real Trash</h2>
+  <div id="map"></div>
+  <div id="controls">
+    <button id="captureBtn">Take Photo of Trash</button>
+    <input type="file" id="imageInput" accept="image/*" capture="environment" class="hidden">
+    <img id="preview" src="" alt="Trash photo preview" />
+    <div id="trashInfo"></div>
+    <div id="questProgress">Quest: Clean 3 areas (0/3)</div>
+    <div id="score">Score: 0</div>
+  </div>
+
+  <script>
+    let map, playerMarker, trashMarkers = [], model;
+    const trashClasses = ["bottle", "cup", "fork", "knife", "spoon", "banana", "apple", "orange", "vase", "cell phone"];
+    let cleanedCount = 0;
+    let score = 0;
+    let questComplete = false;
+
+    // Load ML model
+    cocoSsd.load().then(loadedModel => {
+      model = loadedModel;
+    });
+
+    // Initialize map
+    function initMap(lat, lon) {
+      map = L.map('map').setView([lat, lon], 18);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+      }).addTo(map);
+
+      playerMarker = L.marker([lat, lon]).addTo(map).bindPopup("You are here").openPopup();
+      spawnTrashNearby(lat, lon);
+    }
+
+    // Update player location
+    function updateLocation(pos) {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      if (!map) initMap(lat, lon);
+      else {
+        playerMarker.setLatLng([lat, lon]);
+        map.panTo([lat, lon]);
+      }
+    }
+
+    // Spawn random trash within small distance
+    function spawnTrashNearby(lat, lon) {
+      for (let i = 0; i < 5; i++) {
+        const randLat = lat + (Math.random() - 0.5) / 500;
+        const randLon = lon + (Math.random() - 0.5) / 500;
+        const marker = L.marker([randLat, randLon], {
+          icon: L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/679/679922.png',
+            iconSize: [30, 30]
+          })
+        }).addTo(map).bindPopup("Tap to clean trash!");
+        marker.on('click', () => {
+          if (getDistance(lat, lon, randLat, randLon) < 0.05) {
+            document.getElementById('imageInput').click();
+          } else {
+            alert("Get closer to clean this trash.");
+          }
+        });
+        trashMarkers.push(marker);
+      }
+    }
+
+    // Distance function (km)
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a =
+        0.5 - Math.cos(dLat)/2 +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        (1 - Math.cos(dLon)) / 2;
+      return R * 2 * Math.asin(Math.sqrt(a));
+    }
+
+    // Geo tracking
+    if (navigator.geolocation) {
+      navigator.geolocation.watchPosition(updateLocation);
+    } else {
+      alert("Geolocation not supported.");
+    }
+
+    // Image capture + detection
+    const imageInput = document.getElementById("imageInput");
+    const preview = document.getElementById("preview");
+    const trashInfo = document.getElementById("trashInfo");
+    document.getElementById("captureBtn").addEventListener("click", () => imageInput.click());
+
+    imageInput.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      preview.src = url;
+      trashInfo.textContent = "Analyzing...";
+
+      preview.onload = async () => {
+        const predictions = await model.detect(preview);
+        const found = predictions.filter(p => trashClasses.includes(p.class));
+        if (found.length > 0) {
+          trashInfo.textContent = `✅ Cleaned trash: ${found.map(t => t.class).join(", ")}`;
+          cleanedCount++;
+          score += 50;
+          updateQuestUI();
+        } else {
+          trashInfo.textContent = "❌ No recognizable trash found. Try again.";
+        }
+      };
+    });
+
+    function updateQuestUI() {
+      document.getElementById("questProgress").textContent = `Quest: Clean 3 areas (${cleanedCount}/3)`;
+      document.getElementById("score").textContent = `Score: ${score}`;
+
+      if (!questComplete && cleanedCount >= 3) {
+        score += 100; // reward
+        questComplete = true;
+        alert("🎉 Quest Complete! You earned 100 bonus points!");
+        document.getElementById("score").textContent = `Score: ${score}`;
+        document.getElementById("questProgress").textContent = "✅ Quest Completed!";
+      }
+    }
+
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js')
+        .then(() => console.log('Service Worker registered'))
+        .catch(err => console.error('Service Worker failed:', err));
+    }
+  </script>
+</body>
+</html>
